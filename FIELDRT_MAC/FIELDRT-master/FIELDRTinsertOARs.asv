@@ -1,0 +1,158 @@
+function [planC] = FIELDRTinsertOARs(planC, handles)
+% FIELDRTinsertStructsAttempt
+% Insert the OARs of the selected case contained in the DICOM file in the variable planC.
+%
+% 02/10/2017
+%
+% FIELDRT is distributed under the terms of the Lesser GNU Public License.
+%
+%     This version of FIELDRT is free software: you can redistribute it and/or modify
+%     it under the terms of the GNU General Public License as published by
+%     the Free Software Foundation, either version 3 of the License, or
+%     (at your option) any later version.
+%
+% FIELDRT is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+% without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+% See the GNU General Public License for more details.
+%
+% Author
+% CPiazzese
+
+% import org.dcm4che2.io.*
+% import org.dcm4che2.data.*
+
+warning off
+
+%Load study containing the structure(s) to be inserted.
+fileName = 'Oesophagus_OARs.dcm';
+
+if ispc
+    dirName = [handles.FIELDRT_h.env.userDir '\FIELDRT-master\OARs\'];
+else
+    dirName = [handles.FIELDRT_h.env.userDir '/FIELDRT-master/OARs/'];
+end
+
+dcmFileName = fullfile(dirName,fileName);
+
+if fileName == 0
+    return
+end
+
+AttemptInformation.FileName = fileName;
+AttemptInformation.FiledirName = dirName;
+
+% % To avoid the user to close the window
+% set(handles.figure1,'CloseRequestFcn', ' ');
+
+%% Start loading
+% Deactivation of some buttons
+handles.statictext.String = sprintf(['Loading attempt...\n Please wait']);
+handles.loadbutton.Enable = 'off';
+handles.listbox.Enable = 'off';
+handles.loadbutton.Enable = 'off';
+handles.analyseandresultsbutton.Enable = 'off';
+handles.aboutbutton.Enable = 'off';
+handles.helpbutton.Enable = 'off';
+handles.quitbutton.Enable = 'off';
+
+
+% Sets env variables necessary for operation of ML_DICOM.
+initFlag = init_ML_DICOM;
+
+
+set(handles.figure1,'CloseRequestFcn', @closereq) % To avoid quitbutton_Callback
+
+indexS = planC{end};
+
+[dcmObj, isDcm] = scanfile_mldcm(dcmFileName);
+dcmdirS = [];
+if isDcm
+    dcmdirS = dcmdir_add(dcmFileName, dcmObj, dcmdirS);
+    dcmObj.clear;
+else
+    error('Invalid DICOM data')
+end
+
+dataS = populate_planC_field('structures', dcmdirS.PATIENT);
+
+% Tolerance to determine oblique scan (think about passing it as a
+% parameter in future)
+numScans = length(planC{indexS.scan});
+obliqTol = 1e-3;
+isObliqScanV = ones(1,numScans);
+
+% Check scan to associate the strucutres
+scanUIDc = {planC{indexS.scan}.scanUID};
+scanTypesC = {};
+for i = 1 : numScans
+    scanTypesC{i} = [num2str(i) '.  ' planC{indexS.scan}(i).scanType];
+    
+    if isfield(planC{indexS.scan}(i).scanInfo(1),'DICOMHeaders') && ...
+            ~isempty(planC{indexS.scan}(i).scanInfo(1).DICOMHeaders)
+        ImageOrientationPatientV = planC{indexS.scan}(i).scanInfo(1).DICOMHeaders.ImageOrientationPatient;
+    else
+        ImageOrientationPatientV = [];
+    end
+    % Check for obliqueness
+    if ~isempty(ImageOrientationPatientV) && max(abs((abs(ImageOrientationPatientV) - [1 0 0 0 1 0]'))) <= obliqTol
+        isObliqScanV(i) = 0;
+    end
+    
+end
+
+% Return if not a valid RTStruct file
+if isempty(dataS)
+    CERRStatusString('File not valid.')
+    return
+end
+
+% So that all the structures have the same associatedScan.
+for indexstruct = 1 : size(dataS, 2)
+    dataS(indexstruct).assocScanUID = planC{1, 4}(1).assocScanUID;
+end
+
+if ~ismember(dataS(1).assocScanUID,scanUIDc)
+    %     scanInd = listdlg('PromptString','Select Scan to associate structures',...
+    %         'SelectionMode','single',...
+    %         'ListString',scanTypesC);
+    scanInd = 1;
+    if ~isempty(scanInd)
+        [dataS.assocScanUID] = deal(scanUIDc{scanInd});
+    else
+        return
+    end
+end
+numStructs = length(planC{indexS.structures});
+for i=1:length(dataS)
+    dataS(i) = sortStructures(dataS(i), isObliqScanV, planC);
+    %     colorNum = numStructs + i;
+    %     if isempty(dataS(i).structureColor)
+    %         color = stateS.optS.colorOrder( mod(colorNum-1, size(stateS.optS.colorOrder,1))+1,:);
+    %         dataS(i).structureColor = color;
+    %     end
+end
+if ~isempty(planC{indexS.structures})
+    for strNum = 1:length(dataS)
+        planC{indexS.structures} = dissimilarInsert(planC{indexS.structures},dataS(strNum),length(planC{indexS.structures})+1);
+    end
+else
+    planC{indexS.structures} = dataS;
+end
+
+editStructNumV = (numStructs+1):length(planC{indexS.structures});
+
+
+planC = getRasterSegs(planC, 6);
+%planC = setUniformizedData(planC);
+for strNum = editStructNumV
+    planC = updateStructureMatrices(planC, strNum);
+end
+
+% if isfield(stateS, 'CERRFile')
+%     stateS.structsChanged = 1;
+%     CERRRefresh
+% end
+
+CERRStatusString('Done inserting structures.')
+
+clear temp_planC;
